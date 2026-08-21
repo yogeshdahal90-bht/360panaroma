@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Upload 360° Panorama Viewer</title>
+    <title>360 Panorama Seam Matcher & Street View Exporter</title>
     <style>
         * {
             margin: 0;
@@ -22,58 +22,78 @@
             height: 100vh;
         }
 
-        /* UI Control Panel */
         .ui-overlay {
             position: absolute;
             top: 20px;
             left: 20px;
             z-index: 10;
             color: #ffffff;
-            background: rgba(20, 20, 20, 0.75);
+            background: rgba(20, 20, 20, 0.85);
             padding: 18px 22px;
             border-radius: 12px;
             backdrop-filter: blur(10px);
             border: 1px solid rgba(255, 255, 255, 0.15);
             box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
-            max-width: 320px;
+            width: 320px;
+            max-height: 90vh;
+            overflow-y: auto;
         }
         .ui-overlay h1 {
-            font-size: 1.2rem;
-            margin-bottom: 6px;
+            font-size: 1.1rem;
+            margin-bottom: 4px;
             font-weight: 600;
         }
         .ui-overlay p {
-            font-size: 0.85rem;
+            font-size: 0.8rem;
             opacity: 0.8;
             margin-bottom: 14px;
-            line-height: 1.3;
         }
 
-        /* Upload Button Styles */
-        .upload-btn {
+        .control-group {
+            margin-bottom: 14px;
+        }
+        .control-label {
+            display: flex;
+            justify-content: space-between;
+            font-size: 0.8rem;
+            color: #ccc;
+            margin-bottom: 4px;
+        }
+        input[type="range"] {
+            width: 100%;
+            accent-color: #3b82f6;
+        }
+
+        .btn {
             display: block;
             width: 100%;
             padding: 10px 14px;
-            background: #3b82f6;
             color: #ffffff;
             font-weight: 600;
-            font-size: 0.9rem;
+            font-size: 0.85rem;
             text-align: center;
             border-radius: 6px;
             cursor: pointer;
-            transition: background 0.2s ease, transform 0.1s ease;
+            transition: background 0.2s ease;
+            margin-top: 10px;
+            border: none;
+        }
+        .upload-btn {
+            background: #3b82f6;
         }
         .upload-btn:hover {
             background: #2563eb;
         }
-        .upload-btn:active {
-            transform: scale(0.98);
+        .export-btn {
+            background: #10b981;
+        }
+        .export-btn:hover {
+            background: #059669;
         }
         #file-input {
             display: none;
         }
 
-        /* Loading Indicator */
         #status-msg {
             margin-top: 10px;
             font-size: 0.8rem;
@@ -81,7 +101,6 @@
             display: none;
         }
     </style>
-    <!-- Import Three.js & OrbitControls via CDN -->
     <script type="importmap">
         {
             "imports": {
@@ -96,13 +115,43 @@
     <div id="canvas-container"></div>
     
     <div class="ui-overlay">
-        <h1>360° Panorama Viewer</h1>
+        <h1>Panorama Alignment Tool</h1>
         <p>Drag to look around | Scroll to zoom</p>
         
-        <!-- File Input Interface -->
-        <label for="file-input" class="upload-btn">📁 Load 360° Image</label>
+        <!-- Overlap Offset Slider -->
+        <div class="control-group">
+            <div class="control-label">
+                <span>Horizontal Seam Overlap</span>
+                <span id="overlap-val">0.0°</span>
+            </div>
+            <input type="range" id="overlap-slider" min="-50" max="50" value="0" step="0.1">
+        </div>
+
+        <hr style="border: 0; border-top: 1px solid rgba(255,255,255,0.1); margin: 12px 0;">
+
+        <!-- Vertical Edge Band Width Slider -->
+        <div class="control-group">
+            <div class="control-label">
+                <span>Vertical Edge Band Width</span>
+                <span id="vband-val">1.0cm</span>
+            </div>
+            <input type="range" id="vband-slider" min="0.1" max="20.0" value="1.0" step="0.1">
+        </div>
+
+        <!-- Vertical Target Angle Slider -->
+        <div class="control-group">
+            <div class="control-label">
+                <span>Vertical Angle Expansion</span>
+                <span id="vangle-val">0° (Original)</span>
+            </div>
+            <input type="range" id="vangle-slider" min="0" max="200" value="0" step="1">
+        </div>
+
+        <label for="file-input" class="btn upload-btn">📁 Load Panorama</label>
         <input type="file" id="file-input" accept="image/*">
         
+        <button id="export-btn" class="btn export-btn">📷 Export for Street View</button>
+
         <div id="status-msg">Panorama loaded!</div>
     </div>
 
@@ -110,78 +159,221 @@
         import * as THREE from 'three';
         import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
-        // 1. Scene, Camera, and Renderer Setup
         const container = document.getElementById('canvas-container');
         const fileInput = document.getElementById('file-input');
+        const exportBtn = document.getElementById('export-btn');
         const statusMsg = document.getElementById('status-msg');
+
+        const overlapSlider = document.getElementById('overlap-slider');
+        const vbandSlider = document.getElementById('vband-slider');
+        const vangleSlider = document.getElementById('vangle-slider');
+
+        const overlapVal = document.getElementById('overlap-val');
+        const vbandVal = document.getElementById('vband-val');
+        const vangleVal = document.getElementById('vangle-val');
 
         const scene = new THREE.Scene();
 
         const camera = new THREE.PerspectiveCamera(
-            75,
+            60,
             window.innerWidth / window.innerHeight, 
             0.1, 
-            1000
+            4000
         );
         camera.position.set(0, 0, 0.1);
 
-        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
         renderer.setPixelRatio(window.devicePixelRatio);
         renderer.setSize(window.innerWidth, window.innerHeight);
         container.appendChild(renderer.domElement);
 
-        // 2. Add Orbit Controls
         const controls = new OrbitControls(camera, renderer.domElement);
         controls.enableZoom = true;
         controls.enablePan = false;
-        controls.rotateSpeed = -0.5; // Natural control direction
-        controls.minDistance = 0.1;
-        controls.maxDistance = 10;
+        controls.rotateSpeed = -0.4;
 
-        // 3. Create the Inverted Sphere Geometry
-        const geometry = new THREE.SphereGeometry(500, 60, 40);
-        geometry.scale(-1, 1, 1); // Flip inside out
-
-        const material = new THREE.MeshBasicMaterial();
-        const sphere = new THREE.Mesh(geometry, material);
-        scene.add(sphere);
-
+        let panoramaMesh = null;
+        let currentTexture = null;
         const textureLoader = new THREE.TextureLoader();
 
-        // Load Default Sample Image First
         const defaultUrl = 'https://threejs.org/examples/textures/22944123048_42520c3b9f_k.jpg';
         loadPanorama(defaultUrl);
 
-        // 4. Function to apply texture to sphere
+        function updateLabels() {
+            const offsetDeg = parseFloat(overlapSlider.value);
+            overlapVal.textContent = `${offsetDeg > 0 ? '+' : ''}${offsetDeg.toFixed(1)}°`;
+            vbandVal.textContent = `${vbandSlider.value}cm`;
+            const extraVAngle = parseFloat(vangleSlider.value);
+            vangleVal.textContent = extraVAngle === 0 ? "0° (Original)" : `+${extraVAngle}°`;
+        }
+
+        function rebuildGeometry() {
+            if (!currentTexture) return;
+            updateLabels();
+
+            const overlapDeg = parseFloat(overlapSlider.value);
+            const vBandCm = parseFloat(vbandSlider.value);
+            const extraVAngleDeg = parseFloat(vangleSlider.value);
+
+            const imgWidth = currentTexture.image.width;
+            const imgHeight = currentTexture.image.height;
+            const aspectRatio = imgWidth / imgHeight;
+
+            const baseRadius = 500;
+            const baseHeight = 600; 
+
+            const totalArcLength = baseHeight * aspectRatio;
+            const baseFovDeg = (totalArcLength / baseRadius) * (180 / Math.PI);
+            
+            const cylinderArcDeg = baseFovDeg + overlapDeg;
+            const thetaLength = (cylinderArcDeg * Math.PI) / 180;
+            const thetaStart = -thetaLength / 2;
+
+            const extraHeight = baseRadius * (extraVAngleDeg * Math.PI / 180);
+            const finalHeight = baseHeight + extraHeight;
+
+            if (panoramaMesh) { 
+                scene.remove(panoramaMesh); 
+                panoramaMesh.geometry.dispose(); 
+            }
+
+            const radialSegments = 200;
+            const heightSegments = 40;
+            const geometry = new THREE.PlaneGeometry(1, 1, radialSegments, heightSegments);
+
+            const pos = geometry.attributes.position;
+            const uvAttr = geometry.attributes.uv;
+
+            const vBandFraction = vBandCm / 100.0;
+            const baseVRatio = baseHeight / finalHeight;
+
+            for (let i = 0; i < pos.count; i++) {
+                let u = uvAttr.getX(i);
+                let v = uvAttr.getY(i);
+
+                // Map U along angle arc (Inverted sign fixes left-right mirroring)
+                const angle = -(thetaStart + (u * thetaLength));
+                
+                // Spiral offset: gradually decrease radius along U so tail goes UNDER leading edge
+                const radiusOffset = (u - 0.5) * -1.5; 
+                const currentRadius = baseRadius + radiusOffset;
+
+                // Map vertices into cylinder shape facing inward
+                const x = currentRadius * Math.sin(angle);
+                const z = -currentRadius * Math.cos(angle);
+                const y = (v - 0.5) * finalHeight;
+
+                pos.setXYZ(i, x, y, z);
+
+                // Vertical UV stretching
+                let mappedV = (v - 0.5) / baseVRatio + 0.5;
+                if (mappedV < 0) mappedV = vBandFraction;
+                else if (mappedV > 1.0) mappedV = 1.0 - vBandFraction;
+
+                uvAttr.setXY(i, u, Math.min(Math.max(mappedV, 0), 1));
+            }
+
+            geometry.computeVertexNormals();
+
+            const material = new THREE.MeshBasicMaterial({
+                map: currentTexture,
+                side: THREE.DoubleSide
+            });
+
+            panoramaMesh = new THREE.Mesh(geometry, material);
+            scene.add(panoramaMesh);
+        }
+
         function loadPanorama(imageSource) {
             textureLoader.load(imageSource, (texture) => {
                 texture.colorSpace = THREE.SRGBColorSpace;
-                
-                // Dispose old texture memory if present
-                if (material.map) material.map.dispose();
+                texture.wrapS = THREE.ClampToEdgeWrapping;
+                texture.wrapT = THREE.ClampToEdgeWrapping;
 
-                material.map = texture;
-                material.needsUpdate = true;
+                if (currentTexture) currentTexture.dispose();
+                currentTexture = texture;
+
+                rebuildGeometry();
                 
                 statusMsg.style.display = 'block';
-                statusMsg.textContent = '✓ Panorama updated';
+                statusMsg.textContent = '✓ Panorama loaded';
                 setTimeout(() => { statusMsg.style.display = 'none'; }, 3000);
             });
         }
 
-        // 5. User File Upload Handler (FileReader API)
+        function exportForStreetView() {
+            const exportWidth = 4096;
+            const exportHeight = 2048;
+
+            const exportRenderer = new THREE.WebGLRenderer({ antialias: true });
+            exportRenderer.setSize(exportWidth, exportHeight);
+
+            const cubeMapTarget = new THREE.WebGLCubeRenderTarget(2048);
+            const cubeCamera = new THREE.CubeCamera(0.1, 2000, cubeMapTarget);
+            cubeCamera.position.set(0, 0, 0);
+
+            cubeCamera.update(exportRenderer, scene);
+
+            const equiScene = new THREE.Scene();
+            const equiCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+            
+            const equiMat = new THREE.ShaderMaterial({
+                uniforms: {
+                    map: { value: cubeMapTarget.texture }
+                },
+                vertexShader: `
+                    varying vec2 vUv;
+                    void main() {
+                        vUv = uv;
+                        gl_Position = vec4(position, 1.0);
+                    }
+                `,
+                fragmentShader: `
+                    uniform samplerCube map;
+                    varying vec2 vUv;
+                    #define PI 3.14159265359
+                    void main() {
+                        float longitude = vUv.x * 2.0 * PI - PI;
+                        float latitude = vUv.y * PI - (PI / 2.0);
+                        vec3 dir = vec3(cos(latitude) * sin(longitude), sin(latitude), cos(latitude) * cos(longitude));
+                        gl_FragColor = textureCube(map, dir);
+                    }
+                `
+            });
+
+            const equiMesh = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), equiMat);
+            equiScene.add(equiMesh);
+
+            exportRenderer.render(equiScene, equiCam);
+
+            const link = document.createElement('a');
+            link.download = 'streetview-panorama.jpg';
+            link.href = exportRenderer.domElement.toDataURL('image/jpeg', 0.95);
+            link.click();
+
+            exportRenderer.dispose();
+            cubeMapTarget.dispose();
+
+            statusMsg.style.display = 'block';
+            statusMsg.textContent = '✓ Exported 2:1 Image!';
+            setTimeout(() => { statusMsg.style.display = 'none'; }, 4000);
+        }
+
+        [overlapSlider, vbandSlider, vangleSlider].forEach(ctrl => {
+            ctrl.addEventListener('input', rebuildGeometry);
+        });
+
+        exportBtn.addEventListener('click', exportForStreetView);
+
         fileInput.addEventListener('change', (e) => {
             const file = e.target.files[0];
             if (file) {
                 const reader = new FileReader();
-                reader.onload = function(event) {
-                    loadPanorama(event.target.result); // Pass Base64 data URL to Three.js
-                };
+                reader.onload = (event) => loadPanorama(event.target.result);
                 reader.readAsDataURL(file);
             }
         });
 
-        // 6. Drag & Drop Files directly onto the screen
         window.addEventListener('dragover', (e) => e.preventDefault());
         window.addEventListener('drop', (e) => {
             e.preventDefault();
@@ -189,15 +381,12 @@
                 const file = e.dataTransfer.files[0];
                 if (file.type.startsWith('image/')) {
                     const reader = new FileReader();
-                    reader.onload = function(event) {
-                        loadPanorama(event.target.result);
-                    };
+                    reader.onload = (event) => loadPanorama(event.target.result);
                     reader.readAsDataURL(file);
                 }
             }
         });
 
-        // 7. Animation Loop
         function animate() {
             requestAnimationFrame(animate);
             controls.update();
@@ -205,7 +394,6 @@
         }
         animate();
 
-        // 8. Window Resizing
         window.addEventListener('resize', () => {
             camera.aspect = window.innerWidth / window.innerHeight;
             camera.updateProjectionMatrix();
